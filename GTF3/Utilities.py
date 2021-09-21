@@ -148,11 +148,11 @@ def admm_denoising_snr(args,  Y, sigma_sq, y_true, Dk, penalty_f, eig, B_init, v
         penalty_param = 1.4
         rho = max(rho_mult * gamma, 1 / penalty_param)
     
-    invW = V.dot(np.diag(1/(1+rho*S))).dot(V.T)
+    invF = V.dot(np.diag(1/(1+rho*S))).dot(V.T)
     
     if vec:
         B, obj, err_path = admm(Y, gamma, rho, Dk, penalty_f, penalty_param,
-                                             tol_abs=10 ** (-3), tol_rel=10 ** (-2), max_iter=500, B_init=B_init, invW=invW)
+                                             tol_abs=10 ** (-3), tol_rel=10 ** (-2), max_iter=500, B_init=B_init, invF=invF)
     else:
         B = np.zeros((n, d))
             
@@ -163,7 +163,7 @@ def admm_denoising_snr(args,  Y, sigma_sq, y_true, Dk, penalty_f, eig, B_init, v
                 b_init = B_init[:, trial].reshape(-1,1)
             y = Y[:, trial].reshape(-1,1)
             beta, obj, err_path = admm(y, gamma, rho, Dk, penalty_f, penalty_param,
-                                             tol_abs=10 ** (-3), tol_rel=10 ** (-2), max_iter=500, B_init=b_init, invW = invW)
+                                             tol_abs=10 ** (-3), tol_rel=10 ** (-2), max_iter=500, B_init=b_init, invF = invF)
 
             B[:, trial] = beta.copy().ravel()
     
