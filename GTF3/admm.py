@@ -240,7 +240,7 @@ if __name__ == "__main__":
     B = np.tile(b_true, (d, 1))
     n = nx.number_of_nodes(Gnx)
 
-    sigma_sq = 0.0
+    sigma_sq = 0.1
 
     print ('INPUT_SNR:', INPUT_SNR)
     print ('SIGMA_SQ:', sigma_sq)
@@ -258,5 +258,5 @@ if __name__ == "__main__":
 
     print(Y)
     print(b_true)
-    B_hat, obj_val, err = admm(Y=Y, X=X, gamma=.0001, rho1=0.01, rho2=0.00001, Dk=Dk, penalty_f='L1', penalty_param=.000000001)
+    B_hat, obj_val, err = admm(Y=Y, X=X, gamma=.5, rho1=0.01, rho2=0.00001, Dk=Dk, penalty_f='SCAD', penalty_param=3)
     print(B_hat)
