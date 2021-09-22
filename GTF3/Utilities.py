@@ -64,7 +64,7 @@ def create2DGraph(n=10, plot_flag=0):
 
 def create2DSignal(k=0, n=10, Y_HIGH=10, Y_LOW=-5):
     if k == 0:
-        signal_2d = np.zeros((n, n))
+        signal_2d = np.ones((n, n))
         signal_2d[:n//4+1, :n//4+1] = Y_HIGH
         signal_2d[3*n//4-1:, 3*n//4-1:] = Y_LOW
 
@@ -196,69 +196,4 @@ def autotune_denoising(Y, y_true, Dk, penalty_f, sigma_sq, max_evals, pspace, ei
 
     return results, out['B'], -out['loss'], out['penalty_param'], out['output_snr']#, out['mse'], out['ses']
 
-########################################################################
-# Semi-supervised classification
-# #######################################################################
 
-def admm_ssl_miscls(args, seeds, Y_true, Dk, R, penalty_f, B_init):
-
-    gamma, rho_mult = args
-    
-    if penalty_f == 'L1':
-        penalty_param = 0
-        rho = rho_mult * gamma
-    elif 'SCAD' in penalty_f:
-        penalty_param = 3.7
-        rho = max(rho_mult * gamma, 1.0 / penalty_param)
-    else:
-        penalty_param = 1.4
-        rho = max(rho_mult * gamma, 1.0 / penalty_param)
-
-    n, K = Y_true.shape
-    num_trial = seeds.shape[2]
-    
-    miscls = []
-    Bs = np.zeros((n, K, num_trial))
-
-    for trial in range(num_trial):
-        mask = np.zeros((n, n))
-        Y_obs = np.zeros((n, K))
-        for j in range(K):
-            inds_obs = seeds[:, j, trial].astype(np.int)
-            mask[inds_obs, inds_obs] = 1.0
-            Y_obs[inds_obs, j] = 1.0
-                    
-        if B_init is None:
-            b_init = None
-        else:
-            b_init = B_init[:, :, trial]
-        B, err_path = admm_SSL(mask=sparse.csr_matrix(mask), Y=Y_obs, gamma=gamma, rho=rho, Dk=Dk, penalty_f=penalty_f,
-                               penalty_param=penalty_param, eps=0.01, R=R, tol_abs=10**(-3), tol_rel=10**(-2), max_iter=1000,
-                               B_init=b_init)
-
-        Y = np.argwhere(Y_true > 0)[:, 1]
-        Y_hat = np.argmax(B, axis=1)
-        miscl = sum(Y_hat != Y) * 1.0 / n
-        miscls.append(miscl)
-        Bs[:, :, trial] = B.copy()
-
-    pbar.update()
-
-    return {'B': Bs, 'loss': np.mean(miscls), 'miscls': miscls, 'penalty_param': penalty_param, 'status': STATUS_OK}
-
-
-def autotune_ssl(seeds, Y_true, Dk, R, penalty_f, max_evals, pspace, B_init=None):
-    admm_proxy = partial(admm_ssl_miscls, seeds=seeds, Y_true=Y_true, Dk=Dk, R=R, penalty_f=penalty_f, B_init=B_init)
-    trials = Trials()
-    global pbar
-    pbar = tqdm(total=max_evals, desc="HyperOpt")
-    results = fmin(
-        admm_proxy,
-        space=pspace,
-        algo=tpe.suggest,
-        trials=trials,
-        max_evals=max_evals)
-    pbar.close()
-    out = admm_proxy((results['gamma'], results['rho_mult']))
-
-    return results, out['B'], out['loss'], out['penalty_param'], out['miscls']

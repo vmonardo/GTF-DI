@@ -96,12 +96,12 @@ def admm(Y, X, gamma, rho1, rho2, Dk,  penalty_f, penalty_param, tol_abs=10**(-5
     if invF is None:
         # For updating B
         XTX = X.T.dot(X)
-        invF = inv(rho1 * np.eye(d) + XTX.toarray())
+        invF = inv(rho1 * np.eye(d) + XTX)
 
     if invG is None:
         # For updating C
         DTD = Dk.T.dot(Dk)
-        invG = inv(rho1 * np.eye(n) + rho2*DTD.toarray())
+        invG = inv(rho1 * np.eye(n) + rho2 * DTD.toarray())
 
     # pre-calculate 
     W = X.T.dot(Y)
@@ -113,8 +113,7 @@ def admm(Y, X, gamma, rho1, rho2, Dk,  penalty_f, penalty_param, tol_abs=10**(-5
         ########################################
 
         CT = C.T
-        for j in range(n):
-            B[:, j] = np.matmul(invF, W[:, j] + rho1*(CT[:, j] - U[:, j]))
+        B = np.matmul(invF, W + rho1*(CT - U))
 
         ########################################
         ## Update C (ground truth signal, transposed)
@@ -125,8 +124,7 @@ def admm(Y, X, gamma, rho1, rho2, Dk,  penalty_f, penalty_param, tol_abs=10**(-5
         DkTVZ = Dk.T.dot(V - Z)
         
         C_prev = C.copy()
-        for j in range(d):
-            C[:, j] = np.matmul(invG, rho1*BpUT[:, j] + rho2*DkTVZ[:, j])
+        C = np.matmul(invG, rho1*BpUT + rho2*DkTVZ)
 
         ########################################
         ## Update Z
@@ -221,3 +219,44 @@ def showPlots(rho, gamma, penalty_f, err_path):
     plt.xlabel('iterations')
     plt.legend()
     #plt.show()
+
+if __name__ == "__main__":
+    from Utilities import create2DSignal, penalty_matrix
+    ""
+    PENALTIES = ['L1'] 
+    INPUT_SNR = 0                         
+    k = 0
+    ""
+
+    ""
+    name = '2d-grid'
+    n1 = 4
+    d = 3
+    p = 10
+    Y_HIGH = 10
+    Y_LOW = -5
+
+    Gnx, signal_2d, b_true, xs, ys = create2DSignal(k, n1, Y_HIGH=Y_HIGH, Y_LOW=Y_LOW)
+    B = np.tile(b_true, (d, 1))
+    n = nx.number_of_nodes(Gnx)
+
+    sigma_sq = 0.0
+
+    print ('INPUT_SNR:', INPUT_SNR)
+    print ('SIGMA_SQ:', sigma_sq)
+    
+    Dk = penalty_matrix(Gnx, k)
+    DTD = Dk.T.dot(Dk).toarray()
+    [S, V] = np.linalg.eigh(DTD)
+
+    X = np.random.normal(scale=np.sqrt(1/p), size=(p, d))
+    print(X)
+
+    # Observed vector-valued graph signal Y
+    y_true = X.dot(B)
+    Y = y_true + np.random.normal(scale=np.sqrt(sigma_sq), size=(p, n))
+
+    print(Y)
+    print(b_true)
+    B_hat, obj_val, err = admm(Y=Y, X=X, gamma=.0001, rho1=0.01, rho2=0.00001, Dk=Dk, penalty_f='L1', penalty_param=.000000001)
+    print(B_hat)
