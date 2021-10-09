@@ -1,28 +1,27 @@
 import numpy as np
 import networkx as nx
 
-from GroupProximalOperator import L1ProximalOperator, SCADProximalOperator, MCPProximalOperator
-from Penalty import L1Penalty, SCADPenalty, MCPPenalty
+from .GroupProximalOperator import L1ProximalOperator, SCADProximalOperator, MCPProximalOperator
+from .Penalty import L1Penalty, SCADPenalty, MCPPenalty
 from scipy import sparse
 from scipy.linalg import inv
+from scipy.linalg import solve_sylvester
 
-def admm(Y, X, gamma, rho1, rho2, Dk,  penalty_f, penalty_param, tol_abs=10**(-5), tol_rel=10**(-4), max_iter=1000, B_init = None, invF=None, invG = None):
+def admm(Y, X, gamma, rho, Dk, penalty_f, penalty_param, tol_abs=10**(-5), tol_rel=10**(-4), max_iter=1000, B_init = None):
     """
     solves min_{B} 1/2||Y-X*B||_F^2 + h(D^(k+1)*B'; gamma, penalty_param)
     augmented Lagrangian problem:
-        L_rho(B, C, Z, U, V)    = 1/2||Y-X*B||_F^2 + h(Z)
-                                + rho_1/2* ||D^(k+1)*C- Z + U||_F^2 - rho_1/2* ||U||_F^2
-                                + rho_2/2* ||B - C' + V||_F^2 - rho_2/2 ||V||_F^2
+        L_rho(B, Z, U)    = 1/2||Y-X*B||_F^2 + h(Z)
+                                + rho/2* ||D^(k+1)*B^T- Z + U||_F^2 - rho/2* ||U||_F^2
     Y : observed signal on graph
     X : feature matrix used to observe B
     gamma : parameter for penalty term (lambda in paper)
-    rho_1, rho_2 : Lagrangian multipliers
+    rho_1: Lagrangian multiplier
     Dk : kth order graph difference operator, Dk \in R^{r x d}
     penalty_f : L1, SCAD, MCP
     penalty_param : extra parameter needed for calculating SCAD and MCP proximal operators
 
-    Z  = D^(k+1)*C
-    C = B' 
+    Z  = D^(k+1)*B^T
 
     Forward model:
     Y = XB + noise
@@ -35,10 +34,8 @@ def admm(Y, X, gamma, rho1, rho2, Dk,  penalty_f, penalty_param, tol_abs=10**(-5
     p : number of measurements
 
     Optimization parameters:
-    C \in R^{n x d} : transpose of signal
     Z \in R^{r x d} : graph signal pairwise difference
-    U \in R^{r x d} : first dual variable
-    V \in R^{d x n} : second dual variable
+    U \in R^{r x d} : dual variable
 
     """
     if penalty_f == "L1":
@@ -64,26 +61,21 @@ def admm(Y, X, gamma, rho1, rho2, Dk,  penalty_f, penalty_param, tol_abs=10**(-5
     if B_init is None:
         B_init = X.T.dot(Y)
     B = B_init.copy()
-    
-    # first constraint
-    C = B.copy()
-    C = C.T
-    U = B - C.T
-
-    # second constraint
-    DC = Dk.dot(C)
-    Z = DC.copy()
-    V = DC - Z
-
+ 
     # problem dimensions
     d = B.shape[0]  # dimension of unknown signal at each node
     n = B.shape[1]  # number of nodes
     # p = X.shape[0]  # number of observed features at each node (unnecessary for computation)
     m = Dk.shape[0] # number of edges
 
+    # first constraint
+    DBT = Dk.dot(B.T)
+    Z = DBT.copy()
+    U = DBT - Z
+
     # Calculate the initial objective function value
     obj = 0.5 * np.linalg.norm(Y - X.dot(B), 'fro') ** 2
-    db_norms = np.linalg.norm(DC, axis=1)
+    db_norms = np.linalg.norm(DBT, axis=1)
     vfunc = np.vectorize(lambda x: pen_func(x, gamma))
     f_Z = vfunc(db_norms)
     obj += gamma * sum(f_Z)
@@ -93,18 +85,11 @@ def admm(Y, X, gamma, rho1, rho2, Dk,  penalty_f, penalty_param, tol_abs=10**(-5
     err_path[0].append(obj)
 
     ## pre-calculations performed out of loop for speed up
-    if invF is None:
-        # For updating B
-        XTX = X.T.dot(X)
-        invF = inv(rho1 * np.eye(d) + XTX)
-
-    if invG is None:
-        # For updating C
-        DTD = Dk.T.dot(Dk)
-        invG = inv(rho1 * np.eye(n) + rho2 * DTD.toarray())
+    XTX = X.T.dot(X)
+    DTD = Dk.T.dot(Dk)
 
     # pre-calculate 
-    W = X.T.dot(Y)
+    XTY = X.T.dot(Y)
 
     while not conv:
         ########################################
@@ -112,19 +97,8 @@ def admm(Y, X, gamma, rho1, rho2, Dk,  penalty_f, penalty_param, tol_abs=10**(-5
         ## B = (rho1*I+ X'*X)^(-1)* (X'*Y + rho1(C' - U))
         ########################################
 
-        CT = C.T
-        B = np.matmul(invF, W + rho1*(CT - U))
-
-        ########################################
-        ## Update C (ground truth signal, transposed)
-        ## C = (rho1*I+ Dk'*Dk)^(-1)* (rho1*(B + U)' + rho2*D'*(V - Z))
-        ########################################
-
-        BpUT = (B + U).T
-        DkTVZ = Dk.T.dot(V - Z)
-        
-        C_prev = C.copy()
-        C = np.matmul(invG, rho1*BpUT + rho2*DkTVZ)
+        Qtilde = XTY + rho * (Z.T.dot(Dk) - U.T.dot(Dk))
+        B = solve_sylvester(XTX, DTD, Qtilde) 
 
         ########################################
         ## Update Z
@@ -132,49 +106,34 @@ def admm(Y, X, gamma, rho1, rho2, Dk,  penalty_f, penalty_param, tol_abs=10**(-5
         ########################################
 
         Z_prev = Z.copy()
-        Z = prox.threshold(DC + V, gamma / rho2)
+        DBT = Dk.dot(B.T)
+        Z = prox.threshold(DBT + U, gamma / rho)
 
         ########################################
         ## Update U (scaled lagrangian variable)
         ## U = U + B - C'
         ########################################
 
-        U += B - C.T
-
-        ########################################
-        ## Update V (scaled lagrangian variable)
-        ## V = V + Dk*C - Z
-        ########################################
-        DC = Dk.dot(C)
-        V += DC - Z
+        U += DBT - Z
 
         ## Check the stopping criteria
-        eps_pri1 = np.sqrt(m) * tol_abs + tol_rel * max(np.linalg.norm(B, 'fro'), np.linalg.norm(C, 'fro'))
-        eps_dual1 = np.sqrt(n) * tol_abs + tol_rel * np.linalg.norm(rho1 * U, 'fro')
-        r1 = np.linalg.norm(B - C.T, 'fro')
-        s1 = np.linalg.norm(rho1 * C - C_prev, 'fro')
+        eps_pri = np.sqrt(m) * tol_abs + tol_rel * max(np.linalg.norm(DBT, 'fro'), np.linalg.norm(Z, 'fro'))
+        eps_dual = np.sqrt(n) * tol_abs + tol_rel * np.linalg.norm(rho * Dk.T.dot(U), 'fro')
+        r = np.linalg.norm(DBT - Z, 'fro')
+        s = np.linalg.norm(rho * Dk.T.dot(Z - Z_prev), 'fro')
 
-        eps_pri2 = np.sqrt(m) * tol_abs + tol_rel * max(np.linalg.norm(DC, 'fro'), np.linalg.norm(Z, 'fro'))
-        eps_dual2 = np.sqrt(n) * tol_abs + tol_rel * np.linalg.norm(rho2 * Dk.T.dot(V), 'fro')
-        r2 = np.linalg.norm(DC - Z, 'fro')
-        s2 = np.linalg.norm(rho2 * Dk.T.dot(Z - Z_prev), 'fro')
-
-        if r1 < eps_pri1 and s1 < eps_dual1 and r2 < eps_pri2 and s2 < eps_dual2:
+        if r < eps_pri and s < eps_dual:
             conv = 1
 
-        err_path[1].append(r1)
-        err_path[2].append(eps_pri1)
-        err_path[3].append(s1)
-        err_path[4].append(eps_dual1)
+        err_path[1].append(r)
+        err_path[2].append(eps_pri)
+        err_path[3].append(s)
+        err_path[4].append(eps_dual)
 
-        err_path[5].append(r2)
-        err_path[6].append(eps_pri2)
-        err_path[7].append(s2)
-        err_path[8].append(eps_dual2)
 
         ## Calculate the objective function 1/2||y-Psi*beta||_2^2 + gamma* \sum f(D^(k+1)*beta))
         obj = 0.5 * np.linalg.norm(Y - X.dot(B), 'fro') ** 2
-        db_norms = np.linalg.norm(DC, axis=1)
+        db_norms = np.linalg.norm(DBT, axis=1)
         vfunc = np.vectorize(lambda x: pen_func(x, gamma))
         f_Z = vfunc(db_norms)
         obj += gamma * sum(f_Z)
@@ -188,38 +147,6 @@ def admm(Y, X, gamma, rho1, rho2, Dk,  penalty_f, penalty_param, tol_abs=10**(-5
     return B, obj, err_path
 
 
-
-
-
-
-
-def showPlots(rho, gamma, penalty_f, err_path):
-    # Just to declutter the test functions
-    import matplotlib.pyplot as plt
-
-    plt.figure()
-    plt.plot(err_path[0])
-    plt.xlabel('iterations')
-    plt.ylabel(r'$\frac{1}{2}||y-\beta||_2^2 + \gamma\sum (W_{ij}f(\beta_i-\beta_j)$')
-    plt.title(penalty_f+'. rho: '+str(rho)+' gamma: '+str(gamma))
-    #plt.show()
-
-    plt.figure()
-    plt.subplot(211)
-    plt.plot(err_path[1], 'k', label='r norm')
-    plt.plot(err_path[2], 'k--', label='eps_pri')
-    plt.title(penalty_f+'. rho: '+str(rho)+' gamma: '+str(gamma))
-    plt.ylabel(r'$||r||_2$')
-    plt.legend()
-
-    plt.subplot(212)
-    plt.plot(err_path[3], 'k', label='s norm')
-    plt.plot(err_path[4], 'k--', label='eps_dual')
-    plt.ylabel(r'$||s||_2$')
-    plt.xlabel('iterations')
-    plt.legend()
-    #plt.show()
-
 if __name__ == "__main__":
     from Utilities import create2DSignal, penalty_matrix
     ""
@@ -228,35 +155,58 @@ if __name__ == "__main__":
     k = 0
     ""
 
+    # Forward model:
+    # Y = XB + noise
+    # B \in R^{d x n} : signal
+    # X \in R^{p x d} : feature matrix
+    # Y \in R^{p x n} : measurements
+
+    # n : number of nodes
+    # d : signal dimensions
+    # p : number of measurements
+
     ""
     name = '2d-grid'
-    n1 = 4
-    d = 3
-    p = 10
+    n1 = 2
+    d = 100
+    p = 80
     Y_HIGH = 10
-    Y_LOW = -5
+    Y_LOW = -10
 
     Gnx, signal_2d, b_true, xs, ys = create2DSignal(k, n1, Y_HIGH=Y_HIGH, Y_LOW=Y_LOW)
-    B = np.tile(b_true, (d, 1))
-    n = nx.number_of_nodes(Gnx)
-
-    sigma_sq = 0.1
-
-    print ('INPUT_SNR:', INPUT_SNR)
-    print ('SIGMA_SQ:', sigma_sq)
     
+    n = nx.number_of_nodes(Gnx)
+    B = np.zeros((d, n))
+
+    class1 = Y_HIGH*np.random.normal(size=(d,1)) * np.random.choice([0, 1], size=(d,1), p=[.75, .25])
+    class2 = Y_LOW*np.random.normal(size=(d,1)) * np.random.choice([0, 1], size=(d,1), p=[.75, .25])
+    class3 = np.random.normal(size=(d,1)) * np.random.choice([0, 1], size=(d,1), p=[.75, .25])
+
+    for i in range(n):
+        if b_true[i] == Y_HIGH:
+            B[:, i] = class1.ravel()
+        if b_true[i] == Y_LOW:
+            B[:, i] = class2.ravel()
+        if b_true[i] == 1:
+            B[:, i] = class3.ravel()
+
+    print(np.count_nonzero(B) / (d*n))
+    sigma_sq = 0
+
     Dk = penalty_matrix(Gnx, k)
     DTD = Dk.T.dot(Dk).toarray()
     [S, V] = np.linalg.eigh(DTD)
 
+    # X = np.eye(p)
     X = np.random.normal(scale=np.sqrt(1/p), size=(p, d))
-    print(X)
+    # print(X)
 
     # Observed vector-valued graph signal Y
     y_true = X.dot(B)
     Y = y_true + np.random.normal(scale=np.sqrt(sigma_sq), size=(p, n))
 
-    print(Y)
-    print(b_true)
-    B_hat, obj_val, err = admm(Y=Y, X=X, gamma=.5, rho1=0.01, rho2=0.00001, Dk=Dk, penalty_f='SCAD', penalty_param=3)
-    print(B_hat)
+    # print(Y)
+    print('True B: ', np.around(B, decimals=3))
+    B_hat, obj_val, err = admm(Y=Y, X=X, gamma=.1, c1=.00, c2=.01, rho1=0.01, rho2=0.01, Dk=Dk, penalty_f='L1', penalty_param=3)
+    print('Estimate B: ', np.around(B_hat, decimals=3))
+    print('NNMSE: ', np.linalg.norm(B_hat - B)**2 / np.linalg.norm(B)**2)
